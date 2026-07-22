@@ -32,9 +32,12 @@ production. Bumps require local QA against cursor-sync and tab-highlight
 behaviour.
 
 ### IV. Path-traversal guard on the GP5 endpoint
-`GET /api/plugins/tabview/gp5/{filename:path}` MUST resolve `filename`
+`GET|POST /api/plugins/tabview/gp5/{filename:path}` MUST resolve `filename`
 under the configured DLC dir and reject anything that escapes (`..`, absolute
-paths). The endpoint is publicly mounted; the guard is the single defence.
+paths). Both verbs share one guard (`_resolve_song_path` in routes.py); the
+endpoint is publicly mounted, and the guard is the single defence. The POST
+variant additionally carries a chart-transform override payload (notes/
+chords/tuning/stringCount) in the JSON body — see Principle VII.
 
 ### V. Sloppak path is loaded lazily
 Older feedBack cores ship without `lib/sloppak.py`. A top-level
@@ -48,6 +51,17 @@ arrangement type. Users explicitly switch to it via the Tab View button in
 the player controls. Adding `matchesArrangement` would require careful UX
 review.
 
+### VII. The tab reflects the chart-transform-effective chart, not the disk file
+Tab View MUST NOT convert the raw on-disk arrangement when an effective
+chart is available. screen.js gathers notes/chords/tuning/stringCount from
+`window.highway`'s getters (main player) or the per-instance `bundle`
+(splitscreen) and POSTs them as the override body; `rs2gp.arrangement_to_gp5`'s
+`overrides` param decodes that wire-format payload in place of
+`arr.notes`/`arr.chords`/`arr.tuning`, since chart-transform is a
+browser-only hook the backend can't otherwise observe. Measures/tempo/
+metadata always come from `song`/`arr` regardless. The plain GET MUST keep
+converting straight from `arr`/`song` unchanged, as the back-compat path.
+
 ## Governance
 
 Amendments touching the GP5 conversion (`rs2gp.py`) must keep a back-compat
@@ -55,4 +69,4 @@ fall-through for older arrangement XML formats. Amendments touching the
 factory contract must align with whatever the latest core
 `slopsmithViz_*` interface requires.
 
-**Version**: 3.0.0 | **Ratified**: 2026-05-09 | **Last Amended**: 2026-05-09
+**Version**: 3.1.0 | **Ratified**: 2026-05-09 | **Last Amended**: 2026-07-22

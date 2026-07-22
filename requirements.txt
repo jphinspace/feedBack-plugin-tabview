@@ -2,3 +2,10 @@
 # PyGuitarPro: rs2gp.py builds GP5 files with the `guitarpro` package.
 # Also installed by the org reusable CI so tests importing rs2gp.py work.
 PyGuitarPro>=0.11
+
+# routes.py itself doesn't need these declared (the host app already
+# provides fastapi at runtime — routes.py runs inside its process), but
+# tests/test_routes.py imports routes.py and drives it with
+# fastapi.testclient.TestClient standalone in CI, which needs its own copies.
+fastapi>=0.110.0
+httpx>=0.27.0

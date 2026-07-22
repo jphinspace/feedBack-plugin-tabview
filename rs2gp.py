@@ -30,8 +30,14 @@ BASS_STANDARD = {
 }
 
 
-def arrangement_to_gp5(song, arrangement_index=0):
-    """Convert a Song arrangement to GP5 bytes."""
+def arrangement_to_gp5(song, arrangement_index=0, overrides=None):
+    """Convert a Song arrangement to GP5 bytes.
+
+    `overrides` (optional): {"notes", "chords", "tuning", "string_count"} in
+    wire format (lib/song.py:note_to_wire/chord_to_wire) — replaces
+    arr.notes/arr.chords/arr.tuning/the derived string count. Measures/tempo
+    and metadata always come from song/arr; a transform never touches timing.
+    """
     arr = song.arrangements[arrangement_index]
 
     # path_bass is populated from existing arrangement data and is more reliable than
@@ -40,18 +46,23 @@ def arrangement_to_gp5(song, arrangement_index=0):
     # sloppaks that don't carry path flags.
     is_bass = bool(arr.path_bass) or "bass" in arr.name.lower()
 
-    # arrangement_string_count() (song.py) handles the RS XML quirk where
-    # arr.tuning is always length 6 regardless of instrument: it combines the
-    # highest string index seen in notes/chords, a name-based fallback (4 for
-    # bass, 6 for guitar), and len(arr.tuning) when it isn't the RS-XML
-    # padded value of 6 (trustworthy for sloppak/GP-imported sources).
-    num_strings = arrangement_string_count(arr)
+    if overrides is not None:
+        num_strings = overrides["string_count"]
+        tuning = overrides["tuning"]
+        events = _merge_events_from_wire(overrides["notes"], overrides["chords"])
+    else:
+        # arrangement_string_count() (song.py) handles the RS XML quirk where
+        # arr.tuning is always length 6 regardless of instrument: it combines the
+        # highest string index seen in notes/chords, a name-based fallback (4 for
+        # bass, 6 for guitar), and len(arr.tuning) when it isn't the RS-XML
+        # padded value of 6 (trustworthy for sloppak/GP-imported sources).
+        num_strings = arrangement_string_count(arr)
+        tuning = arr.tuning
+        events = _merge_events(arr)
 
     measures_info = _parse_measures(song.beats)
     if not measures_info:
         measures_info = [_fallback_measure(song.song_length)]
-
-    events = _merge_events(arr)
 
     # --- GP3/4/5 hard limit: writeTrack only writes 7 tuning slots, and
     # writeNotes packs note strings into an 8-bit stringFlags byte via
@@ -95,7 +106,7 @@ def arrangement_to_gp5(song, arrangement_index=0):
         effectChannel=3 if is_bass else 2,
         instrument=33 if is_bass else 30,
     )
-    track.strings = _make_strings(arr.tuning, is_bass, num_strings, remap)
+    track.strings = _make_strings(tuning, is_bass, num_strings, remap)
     track.indicateTuning = True
     track.measures = []
 
@@ -245,6 +256,59 @@ def _merge_events(arr):
                 "time": ch.time,
                 "type": "chord",
                 "chord_notes": [_note_dict(cn) for cn in ch.notes],
+            }
+        )
+
+    events.sort(key=lambda e: e["time"])
+    return events
+
+
+# Wire-format keys (lib/song.py:note_to_wire/note_from_wire). Only the
+# subset _apply_effects maps to a GP5 effect is decoded; others (vibrato,
+# teaching marks, ...) have no GP5 equivalent and are dropped.
+_WIRE_BOOL_NOTE_FIELDS = {
+    "hammer_on": "ho",
+    "pull_off": "po",
+    "harmonic": "hm",
+    "harmonic_pinch": "hp",
+    "palm_mute": "pm",
+    "mute": "mt",
+    "tremolo": "tr",
+    "accent": "ac",
+    "tap": "tp",
+}
+
+
+def _wire_note_dict(d):
+    out = {
+        "string": int(d.get("s", 0)),
+        "fret": int(d.get("f", 0)),
+        "sustain": float(d.get("sus", 0.0)),
+        "slide_to": int(d.get("sl", -1)),
+        "bend": float(d.get("bn", 0.0)),
+    }
+    for internal, wire_key in _WIRE_BOOL_NOTE_FIELDS.items():
+        out[internal] = bool(d.get(wire_key, False))
+    return out
+
+
+def _merge_events_from_wire(notes, chords):
+    """Same shape as _merge_events(arr), sourced from wire-format dicts."""
+    events = []
+    for d in notes or []:
+        ev = _wire_note_dict(d)
+        ev["time"] = float(d.get("t", 0.0))
+        ev["type"] = "note"
+        events.append(ev)
+
+    for ch in chords or []:
+        if ch.get("hd"):
+            continue
+        events.append(
+            {
+                "time": float(ch.get("t", 0.0)),
+                "type": "chord",
+                "chord_notes": [_wire_note_dict(cn) for cn in ch.get("notes", [])],
             }
         )
 

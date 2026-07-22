@@ -117,6 +117,67 @@ def test_used_string_indices_covers_notes_and_chord_members():
     assert rs2gp._used_string_indices(events) == {0, 2, 3}
 
 
+# ── _wire_note_dict / _merge_events_from_wire ───────────────────────────────
+#
+# Decode lib/song.py:note_to_wire/chord_to_wire format into the same event
+# shape _note_dict/_merge_events build from Song/Arrangement objects.
+
+def test_wire_note_dict_decodes_declared_fields_and_defaults_missing():
+    d = rs2gp._wire_note_dict({"s": 2, "f": 7, "sus": 0.5})
+    assert d["string"] == 2
+    assert d["fret"] == 7
+    assert d["sustain"] == 0.5
+    assert d["slide_to"] == -1  # missing "sl" -> no slide, matches note_from_wire
+    assert d["bend"] == 0.0
+    assert d["hammer_on"] is False
+    assert d["accent"] is False
+
+
+def test_wire_note_dict_decodes_techniques_and_slide():
+    d = rs2gp._wire_note_dict({
+        "s": 0, "f": 3, "sus": 0.1,
+        "sl": 5, "bn": 2.0,
+        "ho": True, "po": True, "hm": True, "hp": True,
+        "pm": True, "mt": True, "tr": True, "ac": True, "tp": True,
+    })
+    assert d["slide_to"] == 5
+    assert d["bend"] == 2.0
+    for f in ["hammer_on", "pull_off", "harmonic", "harmonic_pinch",
+              "palm_mute", "mute", "tremolo", "accent", "tap"]:
+        assert d[f] is True
+
+
+def test_merge_events_from_wire_sorts_notes_and_chords_by_time():
+    notes = [{"t": 1.0, "s": 0, "f": 0}, {"t": 0.0, "s": 1, "f": 2}]
+    chords = [{"t": 0.5, "hd": False, "notes": [{"s": 2, "f": 1}]}]
+    events = rs2gp._merge_events_from_wire(notes, chords)
+    assert [e["time"] for e in events] == [0.0, 0.5, 1.0]
+    assert events[0]["type"] == "note"
+    assert events[1]["type"] == "chord"
+    assert events[1]["chord_notes"][0]["string"] == 2
+
+
+def test_merge_events_from_wire_skips_high_density_chords():
+    events = rs2gp._merge_events_from_wire([], [{"t": 0.0, "hd": True, "notes": []}])
+    assert events == []
+
+
+def test_merge_events_from_wire_matches_object_path_for_equivalent_input():
+    # Object path and wire path must agree on the same logical chart.
+    # slide_to=-1/bend=0.0 passed explicitly: real Note objects always
+    # carry those, unlike make_note()'s own None/False test defaults.
+    obj_events = rs2gp._merge_events(SimpleNamespace(
+        notes=[make_note(string=1, fret=5, time=0.25, hammer_on=True, slide_to=-1, bend=0.0)],
+        chords=[SimpleNamespace(time=0.5, high_density=False,
+                                 notes=[make_note(string=3, fret=2, slide_to=-1, bend=0.0)])],
+    ))
+    wire_events = rs2gp._merge_events_from_wire(
+        [{"t": 0.25, "s": 1, "f": 5, "ho": True}],
+        [{"t": 0.5, "hd": False, "notes": [{"s": 3, "f": 2}]}],
+    )
+    assert obj_events == wire_events
+
+
 # ── _quantize_sixteenth ────────────────────────────────────────────────────────
 
 def test_quantize_sixteenth_snaps_to_the_nearest_subdivision():

@@ -3,7 +3,7 @@
 import sys
 import tempfile
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 # Ensure the song lib is importable
@@ -27,22 +27,38 @@ def setup(app: FastAPI, context: dict):
 
     from rs2gp import arrangement_to_gp5
 
-    def _song_to_gp5(song, arrangement: int) -> Response:
+    def _song_to_gp5(song, arrangement: int, overrides=None) -> Response:
         if not song.arrangements:
             return Response("No arrangements found", status_code=404)
         idx = max(0, min(arrangement, len(song.arrangements) - 1))
-        gp5_bytes = arrangement_to_gp5(song, idx)
+        gp5_bytes = arrangement_to_gp5(song, idx, overrides=overrides)
         return Response(
             content=gp5_bytes,
             media_type="application/octet-stream",
             headers={"Content-Disposition": 'attachment; filename="tab.gp5"'},
         )
 
-    @app.get("/api/plugins/tabview/gp5/{filename:path}")
-    def tabview_gp5(filename: str, arrangement: int = 0):
+    # Validated shape-only; rs2gp's per-field casts reject malformed
+    # notes/chords, surfacing as the same "Conversion error" 500 as GET.
+    def _parse_overrides(body):
+        if not isinstance(body, dict):
+            return None
+        notes = body.get("notes")
+        chords = body.get("chords")
+        tuning = body.get("tuning")
+        string_count = body.get("stringCount")
+        if not isinstance(notes, list) or not isinstance(chords, list):
+            return None
+        if not isinstance(tuning, list) or not tuning:
+            return None
+        if not isinstance(string_count, int) or isinstance(string_count, bool) or string_count < 1:
+            return None
+        return {"notes": notes, "chords": chords, "tuning": tuning, "string_count": string_count}
+
+    def _resolve_song_path(filename: str):
         dlc = get_dlc_dir()
         if not dlc:
-            return Response("DLC folder not configured", status_code=500)
+            return None, None, Response("DLC folder not configured", status_code=500)
 
         song_path = Path(dlc) / filename
 
@@ -51,12 +67,19 @@ def setup(app: FastAPI, context: dict):
         try:
             resolved = song_path.resolve()
         except Exception:
-            return Response("Path resolution failed", status_code=400)
+            return None, None, Response("Path resolution failed", status_code=400)
         if resolved != dlc_resolved and dlc_resolved not in resolved.parents:
-            return Response("Path traversal not allowed", status_code=400)
+            return None, None, Response("Path traversal not allowed", status_code=400)
 
         if not song_path.exists():
-            return Response("File not found", status_code=404)
+            return None, None, Response("File not found", status_code=404)
+
+        return song_path, dlc, None
+
+    def _load_and_convert(filename: str, arrangement: int, overrides) -> Response:
+        song_path, dlc, err = _resolve_song_path(filename)
+        if err:
+            return err
 
         try:
             # Song package (zip-form *.feedpak / *.sloppak or directory-form
@@ -80,7 +103,7 @@ def setup(app: FastAPI, context: dict):
                 cache = Path(raw_cache) if raw_cache is not None else Path(tempfile.gettempdir()) / "sloppak_cache"
                 cache.mkdir(parents=True, exist_ok=True)
                 loaded = sloppak_mod.load_song(filename, Path(dlc), cache)
-                return _song_to_gp5(loaded.song, arrangement)
+                return _song_to_gp5(loaded.song, arrangement, overrides)
 
             # Any non-package input is unsupported.
             return Response(
@@ -91,3 +114,18 @@ def setup(app: FastAPI, context: dict):
             import traceback
             traceback.print_exc()
             return Response(f"Conversion error: {e}", status_code=500)
+
+    @app.get("/api/plugins/tabview/gp5/{filename:path}")
+    def tabview_gp5(filename: str, arrangement: int = 0):
+        return _load_and_convert(filename, arrangement, None)
+
+    @app.post("/api/plugins/tabview/gp5/{filename:path}")
+    async def tabview_gp5_transformed(filename: str, request: Request, arrangement: int = 0):
+        try:
+            body = await request.json()
+        except Exception:
+            return Response("Invalid JSON body", status_code=400)
+        overrides = _parse_overrides(body)
+        if overrides is None:
+            return Response("Invalid chart-transform override payload", status_code=400)
+        return _load_and_convert(filename, arrangement, overrides)

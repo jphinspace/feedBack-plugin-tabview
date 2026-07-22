@@ -165,6 +165,35 @@ function _resolveMount(highwayCanvas) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Chart-transform-effective chart (feedBack#952)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Prefers window.highway's full-difficulty getters (main player, matches
+// Tab View's existing ignore-the-mastery-slider behavior); falls back to
+// the per-instance bundle under splitscreen, which has no handle to its
+// own highway. Null means no usable chart source — caller falls back to
+// the plain GET (no chart-transform support).
+function _tvGatherChartPayload(bundle) {
+    const hw = !_ssActive() ? window.highway : null;
+    if (hw && typeof hw.getNotes === 'function' && typeof hw.getChords === 'function'
+        && typeof hw.getStringCount === 'function' && typeof hw.getTuning === 'function') {
+        const notes = hw.getNotes();
+        const chords = hw.getChords();
+        const stringCount = hw.getStringCount();
+        const tuning = hw.getTuning();
+        if (Array.isArray(notes) && Array.isArray(chords)
+            && Array.isArray(tuning) && Number.isFinite(stringCount)) {
+            return { notes, chords, tuning, stringCount };
+        }
+    }
+    if (bundle && Array.isArray(bundle.notes) && Array.isArray(bundle.chords)
+        && Array.isArray(bundle.tuning) && Number.isFinite(bundle.stringCount)) {
+        return { notes: bundle.notes, chords: bundle.chords, tuning: bundle.tuning, stringCount: bundle.stringCount };
+    }
+    return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Cursor sync helpers (stateless — beats come from the bundle)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -234,10 +263,16 @@ function createFactory() {
     // Fetch / load tracking
     let _tvCurrentFile = null;   // filename the currently-loaded GP5 was fetched for
     let _tvCurrentArr = null;    // arrangement_index the current GP5 was fetched for
+    // Identity of the notes array the current GP5 reflects — chart-transform
+    // restages a fresh reference on every rerun, so a ref change is how
+    // draw() detects "effective chart changed" independent of song identity.
+    let _tvCurrentNotesRef = null;
     let _tvLoadingFile = null;   // filename a currently-in-flight fetch is targeting
     let _tvLoadingArr = null;    // arrangement_index that fetch is targeting
-    let _tvFailedFile = null;    // last (filename, arr_index) pair whose fetch failed —
+    let _tvLoadingNotesRef = null; // notes ref (see above) that fetch is targeting
+    let _tvFailedFile = null;    // last (filename, arr_index, notes ref) triple whose fetch failed —
     let _tvFailedArr = null;     // used by draw() to avoid a per-frame retry storm
+    let _tvFailedNotesRef = null;
 
     // Cursor sync
     let _tvLastTick = -1;
@@ -495,7 +530,7 @@ function createFactory() {
 
     // ── alphaTab init ───────────────────────────────────────────────
 
-    async function _tvInitAlphaTab(arrayBuffer, myToken) {
+    async function _tvInitAlphaTab(arrayBuffer, notesRef, myToken) {
         const c = _tvCreateContainer();
         if (!c) return;
 
@@ -562,6 +597,7 @@ function createFactory() {
             _tvSetHighwayVisible(false);
             _tvFailedFile = null;
             _tvFailedArr = null;
+            _tvFailedNotesRef = null;
             // A successful render supersedes any prior error banner.
             _tvRemoveErrorBanner();
             // renderFinished fires after EVERY (re)layout, including a
@@ -591,9 +627,11 @@ function createFactory() {
             _tvReady = false;
             _tvCurrentFile = null;
             _tvCurrentArr = null;
+            _tvCurrentNotesRef = null;
             if (failedFile != null) {
                 _tvFailedFile = failedFile;
                 _tvFailedArr = failedArr;
+                _tvFailedNotesRef = notesRef;
             }
             if (_tvContainer) _tvContainer.style.visibility = 'hidden';
             if (_tvHighwayCanvas) _tvHighwayCanvas.style.visibility = _tvPrevVisibility || '';
@@ -605,7 +643,7 @@ function createFactory() {
         _tvApi.load(new Uint8Array(arrayBuffer));
     }
 
-    async function _tvFetchAndInit(filename, arrIdx, myToken) {
+    async function _tvFetchAndInit(filename, arrIdx, payload, myToken) {
         if (!filename) {
             console.warn('[TabView] no filename known yet; skipping fetch');
             return;
@@ -625,6 +663,7 @@ function createFactory() {
         }
         _tvLoadingFile = filename;
         _tvLoadingArr = arrIdx;
+        _tvLoadingNotesRef = payload ? payload.notes : null;
         try {
             await _tvLoadScript();
             if (_tvInitToken !== myToken) return;
@@ -644,7 +683,19 @@ function createFactory() {
             }
             const url = '/api/plugins/tabview/gp5/' + encodeURIComponent(decoded) +
                 '?arrangement=' + arrIdx;
-            const resp = await fetch(url);
+            // POST the effective chart when available; plain GET otherwise.
+            const resp = payload
+                ? await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        notes: payload.notes,
+                        chords: payload.chords,
+                        tuning: payload.tuning,
+                        stringCount: payload.stringCount,
+                    }),
+                })
+                : await fetch(url);
             if (_tvInitToken !== myToken) return;
             if (!resp.ok) throw new Error(await resp.text());
             const data = await resp.arrayBuffer();
@@ -665,11 +716,12 @@ function createFactory() {
                 return;
             }
             _tvSizeContainer();
-            await _tvInitAlphaTab(data, myToken);
+            await _tvInitAlphaTab(data, payload ? payload.notes : null, myToken);
 
             if (_tvInitToken !== myToken) return;
             _tvCurrentFile = filename;
             _tvCurrentArr = arrIdx;
+            _tvCurrentNotesRef = payload ? payload.notes : null;
             // DO NOT show the container or hide the highway here:
             // _tvApi.load() inside _tvInitAlphaTab kicks off rendering
             // but resolves before the first frame is painted, so doing
@@ -683,6 +735,7 @@ function createFactory() {
             console.error('[TabView] GP5 fetch/init failed:', e);
             _tvFailedFile = filename;
             _tvFailedArr = arrIdx;
+            _tvFailedNotesRef = payload ? payload.notes : null;
             // Hide any stale tab overlay (either a prior successful load
             // that's being reloaded into a failing song, or the freshly
             // created empty container from an initial failed load) so
@@ -700,6 +753,7 @@ function createFactory() {
             if (_tvInitToken === myToken) {
                 _tvLoadingFile = null;
                 _tvLoadingArr = null;
+                _tvLoadingNotesRef = null;
             }
         }
     }
@@ -901,10 +955,13 @@ function createFactory() {
         _tvLastTick = -1;
         _tvCurrentFile = null;
         _tvCurrentArr = null;
+        _tvCurrentNotesRef = null;
         _tvLoadingFile = null;
         _tvLoadingArr = null;
+        _tvLoadingNotesRef = null;
         _tvFailedFile = null;
         _tvFailedArr = null;
+        _tvFailedNotesRef = null;
         _tvLatestBeats = null;
         _tvAtBeats = [];
         _tvLastBeat = null;
@@ -967,7 +1024,7 @@ function createFactory() {
                 || _tvFilename;
             const arrIdx = Number.isInteger(songInfo.arrangement_index)
                 ? songInfo.arrangement_index : 0;
-            _tvFetchAndInit(filename, arrIdx, myToken);
+            _tvFetchAndInit(filename, arrIdx, _tvGatherChartPayload(bundle), myToken);
 
             _isReady = true;
             // The self-driven cursor loop (the marker can't rely on the host
@@ -985,14 +1042,14 @@ function createFactory() {
             // wouldn't reflect this panel's arrangement).
             _tvLatestBeats = bundle.beats || null;
 
-            // Detect arrangement / song change: re-fetch GP5 when the
-            // active (filename, arrangement_index) differs from the
-            // one the currently-displayed score was loaded for. Guard
-            // against per-frame retry loops — while a fetch is in
-            // flight for the same target, skip. draw() runs every rAF
-            // and a typical fetch takes well over one frame; without
-            // this check we'd spam the endpoint and keep bumping the
-            // init token, invalidating each request before it lands.
+            // Detect arrangement / song / chart-transform change: re-fetch
+            // GP5 when the active (filename, arrangement_index, effective
+            // notes) differs from what the currently-displayed score was
+            // built from. Guard against per-frame retry loops — while a
+            // fetch is in flight for the same target, skip. draw() runs
+            // every rAF and a typical fetch takes well over one frame;
+            // without this check we'd spam the endpoint and keep bumping
+            // the init token, invalidating each request before it lands.
             //
             // Prefer bundle.songInfo.filename when present and fall
             // back to the _tvFilename cache from our playSong wrap.
@@ -1006,12 +1063,15 @@ function createFactory() {
                 || _tvFilename;
             const arrIdx = Number.isInteger(songInfo.arrangement_index)
                 ? songInfo.arrangement_index : 0;
+            const payload = _tvGatherChartPayload(bundle);
+            // Ref, not deep-equal — a transform restages a fresh array each rerun.
+            const notesRef = payload ? payload.notes : null;
             const chartChanged = filename &&
-                (filename !== _tvCurrentFile || arrIdx !== _tvCurrentArr);
+                (filename !== _tvCurrentFile || arrIdx !== _tvCurrentArr || notesRef !== _tvCurrentNotesRef);
             const loadInFlight = _tvLoadingFile !== null &&
-                _tvLoadingFile === filename && _tvLoadingArr === arrIdx;
+                _tvLoadingFile === filename && _tvLoadingArr === arrIdx && _tvLoadingNotesRef === notesRef;
             const previouslyFailed = _tvFailedFile === filename &&
-                _tvFailedArr === arrIdx;
+                _tvFailedArr === arrIdx && _tvFailedNotesRef === notesRef;
             if (chartChanged && !loadInFlight && !previouslyFailed) {
                 // Defense-in-depth mount check. _tvFetchAndInit also
                 // guards (and is the single source of truth), but
@@ -1022,7 +1082,7 @@ function createFactory() {
                 if (_resolveMount(_tvHighwayCanvas)) {
                     const myToken = ++_tvInitToken;
                     _tvLastTick = -1;
-                    _tvFetchAndInit(filename, arrIdx, myToken);
+                    _tvFetchAndInit(filename, arrIdx, payload, myToken);
                     // fall through — cursor sync below will be a no-op
                     // until _tvReady flips true again after the re-init.
                 }

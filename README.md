@@ -11,6 +11,7 @@ A [feedBack](https://github.com/got-feedback/feedback) plugin that renders custo
 - Preserves techniques: bends, slides, hammer-ons, pull-offs, harmonics, palm mutes, tremolo picking
 - Handles custom tunings and capo
 - Per-measure tempo changes
+- Reflects any active chart-transform provider — the tab shows the effective notes/strings/tuning, not just the original chart
 
 ## Installation
 
@@ -38,9 +39,11 @@ Restart feedBack. The plugin loads automatically.
 
 ## How it works
 
-1. **routes.py** exposes `GET /api/plugins/tabview/gp5/{filename}?arrangement=N`
-2. **rs2gp.py** converts the arrangement (notes, chords, beats, tuning, techniques) into a Guitar Pro 5 file using `pyguitarpro`
-3. **screen.js** loads alphaTab from CDN, fetches the GP5 file, renders it, and syncs the cursor to `audio.currentTime` using the beat timing data from the highway
+1. **routes.py** exposes `GET|POST /api/plugins/tabview/gp5/{filename}?arrangement=N`. `POST`'s body carries the effective `{notes, chords, tuning, stringCount}`; `GET` converts the raw arrangement unchanged and is the fallback for older cores.
+2. **rs2gp.py** converts the arrangement into a Guitar Pro 5 file via `pyguitarpro`. Given a POST `overrides` payload, notes/chords/tuning/string count come from it instead of the arrangement; measures/tempo/metadata always come from the arrangement.
+3. **screen.js** loads alphaTab from CDN, gathers the current chart (`window.highway`'s getters, or the per-instance `bundle` under splitscreen), POSTs it alongside the fetch, renders the returned GP5, and syncs the cursor to `audio.currentTime`
+
+A chart-transform provider can register a browser-only hook that remaps notes/chords/tuning after difficulty filtering; Tab View reads that effective chart via `window.highway`'s getters and forwards it to the server instead of re-deriving from the original song file.
 
 ## Files
 
