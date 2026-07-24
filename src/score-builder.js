@@ -1,15 +1,11 @@
 // Builds an alphaTab Score directly from the highway's chart bundle
-// (notes/chords/tuning/stringCount/beats), in place of the old GP5-via-
-// pyguitarpro round trip. bundle.notes/.chords/.tuning/.stringCount are
-// already the EFFECTIVE, chart-transform-applied chart (highway.js applies
-// any registered transform before building the bundle), so building
-// straight from bundle means any prior plugin's remap reaches the tab.
-//
-// alphaTab has no string-count ceiling (unlike GP5's hard 7-string cap),
-// so extended-range instruments need no remap workaround here.
+// (notes/chords/tuning/stringCount/beats/songInfo), in place of the old
+// GP5-via-pyguitarpro round trip. The bundle is already chart-transform-
+// applied, so any registered provider's remap reaches the tab, and
+// alphaTab's model has no GP5-style string-count ceiling.
 //
 // Rhythm/tuning math lives in chart-quantize.js (no alphaTab dependency,
-// see test/chart-quantize.test.mjs); this file is the alphaTab-
+// see test/chart-quantize.test.mjs); this file is the alphaTab
 // object-construction half (see test/score-builder.test.mjs).
 
 import {
@@ -53,15 +49,31 @@ function restBeats(atModel, thirtySeconds) {
     return decomposeThirtySeconds(thirtySeconds).map(part => restBeat(atModel, part));
 }
 
+// Continuation beats for a split duration (e.g. a 17-slot gap) must keep
+// ringing, not go silent — ties each note back to the origin instead of
+// replaying one-shot attack effects. No origins -> a rest, like restBeat.
+function tieContinuationBeat(atModel, origins, part) {
+    const b = new atModel.Beat();
+    b.duration = part.duration;
+    b.dots = part.dots;
+    for (const origin of origins) {
+        const note = new atModel.Note();
+        note.string = origin.string;
+        note.fret = origin.fret;
+        note.isTieDestination = true;
+        if (origin.isPalmMute) note.isPalmMute = true;
+        if (origin.isDead) note.isDead = true;
+        b.addNote(note);
+    }
+    return b;
+}
+
 // One measure's events -> alphaTab Beat[] (rests filling gaps, one Note
-// per sounded string per slot — the RS "same string re-struck" collision
-// guard mirrors the old GP5 path's one-note-per-string-per-beat limit).
-// wire.s/wire.f are validated (integer, in-range): a chart-transform
-// provider is a less trusted data source than the original chart file,
-// and a non-numeric/out-of-range string index would otherwise index past
-// staff.tuning and land on NaN pitch instead of being safely dropped (the
-// old GP5 path also dropped any note whose mapped string fell outside the
-// representable range).
+// per sounded string per slot — mirrors the old GP5 path's one-note-per-
+// string-per-beat limit). wire.s/wire.f are validated (integer, in-range):
+// a chart-transform provider is less trusted than the original chart
+// file, and an invalid string would otherwise index past staff.tuning
+// and land on NaN pitch instead of being dropped.
 function createBeats(atModel, events, measureInfo, stringCount) {
     const total = measureInfo.numBeats * SUBDIV;
     if (!events.length) return restBeats(atModel, total);
@@ -91,17 +103,13 @@ function createBeats(atModel, events, measureInfo, stringCount) {
         beat.duration = decomposed[0].duration;
         beat.dots = decomposed[0].dots;
 
-        // alphaTab's Beat model has no per-note tremolo field (only
-        // Beat.tremoloPicking), unlike GP5's per-note NoteEffect — so a
-        // mixed chord (one tremolo string among plain ones) can't be
-        // represented exactly either way. Require EVERY sounded note in
-        // the slot to request it before marking the whole beat: silently
-        // dropping tremolo on a lone flagged string in a mixed chord is a
-        // smaller error than incorrectly tremolo-marking strings that
-        // never asked for it.
-        let soundedCount = 0;
+        // Beat.tremoloPicking is per-beat, not per-note, so a mixed chord
+        // (one tremolo string among plain ones) can't be represented
+        // exactly. Require EVERY sounded note to request it: dropping a
+        // lone flag is a smaller error than marking strings that didn't.
         let tremoloCount = 0;
         const seen = new Set();
+        const soundedNotes = [];
         for (const ev of slots.get(pos)) {
             const wireNotes = ev.type === 'chord' ? ev.chordNotes : [ev.note];
             for (const wire of wireNotes) {
@@ -114,12 +122,12 @@ function createBeats(atModel, events, measureInfo, stringCount) {
                 note.string = wire.s + 1;
                 note.fret = wire.f;
                 applyNoteEffects(note, wire, atModel);
-                soundedCount++;
                 if (wire.tr) tremoloCount++;
                 beat.addNote(note);
+                soundedNotes.push(note);
             }
         }
-        if (soundedCount > 0 && tremoloCount === soundedCount) {
+        if (soundedNotes.length > 0 && tremoloCount === soundedNotes.length) {
             const t = new atModel.TremoloPickingEffect();
             t.marks = 1;
             t.style = atModel.TremoloPickingStyle.Default;
@@ -129,7 +137,7 @@ function createBeats(atModel, events, measureInfo, stringCount) {
         beats.push(beat);
         cursor += thirtySecondsForDuration(decomposed[0]);
         for (let j = 1; j < decomposed.length; j++) {
-            beats.push(restBeat(atModel, decomposed[j]));
+            beats.push(tieContinuationBeat(atModel, soundedNotes, decomposed[j]));
             cursor += thirtySecondsForDuration(decomposed[j]);
         }
     }
@@ -153,12 +161,9 @@ export function buildScoreFromBundle(atModel, bundle) {
     const tuningOffsets = Array.isArray(bundle.tuning) && bundle.tuning.length
         ? bundle.tuning : new Array(stringCount).fill(0);
     // Word-boundary match (not a bare substring) so e.g. "BasslineKeys"
-    // doesn't misclassify as bass — matches the same convention already
-    // established elsewhere in the ecosystem (feedBack-plugin-chart-
-    // retuner's arrangementClassFor). There's no more-authoritative signal
-    // available here: bundle.songInfo carries only the arrangement's
-    // display name, not an instrument-type flag (that only ever existed
-    // server-side, in the arrangement file itself).
+    // doesn't misclassify as bass. No more-authoritative signal is
+    // available: bundle.songInfo carries only the arrangement's display
+    // name, not an instrument-type flag (that only existed server-side).
     const isBass = /\bbass\b/i.test(songInfo.arrangement || '');
 
     let measures = parseMeasures(bundle.beats);
@@ -180,10 +185,9 @@ export function buildScoreFromBundle(atModel, bundle) {
     staff.stringTuning = new Tuning('', buildTuning(tuningOffsets, isBass, stringCount));
     track.addStaff(staff);
 
-    // events and measures are both time-sorted and contiguous (each
-    // measure's endTime is the next one's startTime), so a single forward
-    // pointer partitions events measure-by-measure in O(n+m) instead of
-    // re-scanning the whole event list per measure.
+    // events/measures are both time-sorted and contiguous, so a single
+    // forward pointer partitions events measure-by-measure in O(n+m)
+    // instead of rescanning per measure.
     let eventIdx = 0;
     while (eventIdx < events.length && measures.length && events[eventIdx].time < measures[0].startTime) eventIdx++;
 

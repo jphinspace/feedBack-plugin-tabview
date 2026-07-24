@@ -41,7 +41,7 @@ Restart feedBack. The plugin loads automatically.
 1. **screen.js** gathers the current chart bundle (notes/chords/tuning/stringCount/beats/songInfo — the same bundle any custom renderer's `init`/`draw` receives) and passes it to `buildScoreFromBundle`.
 2. **src/chart-quantize.js** does the alphaTab-independent chart math: groups beats into measures, quantizes note onsets to a 32nd-note grid, decomposes gaps into duration/dots pairs, and builds the tuning table.
 3. **src/score-builder.js** builds an `alphaTab.model.Score` from that: constructs the `Track`/`Staff`/`Bar`/`Voice`/`Beat`/`Note` graph and maps techniques (hammer-on/pull-off, slides, bends, harmonics, palm mute, tremolo, accents) onto alphaTab `Note`/`Beat` fields.
-4. **screen.js** hands the built `Score` to `alphaTabApi.renderScore()` (reusing one `AlphaTabApi` instance across rebuilds — only recreated when Tab View itself is reactivated) and syncs the cursor to `audio.currentTime` using the beat timing data from the highway.
+4. **screen.js** hands the built `Score` to `alphaTabApi.renderScore()` (reusing one `AlphaTabApi` instance across rebuilds) and positions its own boundsLookup-driven marker from `window.highway.getTime()` (single-player) or `bundle.currentTime` (splitscreen).
 
 The tab rebuilds whenever `bundle.notes`' identity changes — on a song/arrangement switch, a mastery-slider move, or a chart-transform provider rerunning (a provider always restages a fresh notes array), so the tab always reflects the same effective chart the highway itself is drawing.
 

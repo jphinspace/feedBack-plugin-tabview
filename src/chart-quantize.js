@@ -62,23 +62,19 @@ export function parseMeasures(beats) {
 }
 
 export function fallbackMeasure(length) {
-    // Any non-positive/invalid length (missing, NaN, 0, or negative — none
-    // of which are useful for rendering a real measure) falls back to a
-    // default span. `length || 60.0` looked equivalent but wasn't: it also
-    // let a negative length straight through (only 0/NaN/null/undefined
-    // are falsy in JS), which would have produced a measure ending before
-    // it starts.
+    // Falls back to a default span for any non-positive/invalid length.
+    // `length || 60.0` isn't equivalent: it also lets a negative length
+    // through (only 0/NaN/null/undefined are falsy), producing a measure
+    // that ends before it starts.
     const len = (typeof length === 'number' && length > 0) ? length : 60.0;
     const numBeats = 4;
     return {
         startTime: 0.0,
         endTime: len,
         numBeats,
-        // One beatTimes entry per numBeats, evenly spanning the measure —
-        // quantizeThirtySecond treats the LAST entry's "next boundary" as
-        // endTime, so a beatTimes/numBeats length mismatch here previously
-        // left slots past the true measure end unreachable (positions
-        // clamped into the final slot in createBeats).
+        // One entry per numBeats, evenly spanning the measure —
+        // quantizeThirtySecond treats the last entry's next boundary as
+        // endTime, so a length mismatch here left late slots unreachable.
         beatTimes: Array.from({ length: numBeats }, (_, i) => (len * i) / numBeats),
         bpm: 120.0,
     };

@@ -13,8 +13,9 @@ Tab View MUST NOT render notation glyphs itself. alphaTab is the source of
 truth for all musical glyphs, beam grouping, stems, and bar layout. Our job
 is to translate the renderer bundle (notes/chords/tuning/stringCount/beats)
 into an alphaTab `Score` (`src/chart-quantize.js` + `src/score-builder.js`)
-and to drive alphaTab's cursor from `audio.currentTime` using beat timing
-data the highway exposes.
+and to drive our own boundsLookup-driven marker from `window.highway.getTime()`
+(single-player) or `bundle.currentTime` (splitscreen), using beat timing data
+the highway exposes.
 
 ### II. Multi-instance by construction (slopsmith#36)
 Per-instance state lives in factory closures returned from `createFactory()`.
@@ -32,14 +33,11 @@ behaviour.
 
 ### IV. One AlphaTabApi instance per activation
 Tab View MUST NOT destroy and recreate its `AlphaTabApi` instance on every
-chart rebuild (song switch, mastery move, a chart-transform provider
-rerunning). `renderScore()` on a live instance is alphaTab's own documented
-way to switch what it's showing; recreating the whole instance every time
-redoes font/layout setup and DOM teardown for no reason. The instance is
-destroyed only in `_teardown()`, when Tab View itself is deactivated or
-reactivated with a new canvas. Each render still registers its own
-`scoreLoaded`/`renderFinished`/`error` closures (they capture that render's
-notes ref and init token); the previous render's listeners MUST be
+chart rebuild — `renderScore()` on a live instance is alphaTab's own
+documented way to switch content; recreating redoes font/layout setup and
+DOM teardown for no reason. The instance is destroyed only in
+`_teardown()`. Each render registers its own `scoreLoaded`/
+`renderFinished`/`error` closures; the previous render's listeners MUST be
 unregistered first via the unregister functions `.on()` returns, or they
 accumulate for the life of the instance.
 
@@ -48,11 +46,10 @@ Tab View MUST NOT fetch or convert a separate file server-side.
 `buildScoreFromBundle` (`src/score-builder.js`) builds the alphaTab `Score`
 directly from `bundle.notes`/`.chords`/`.tuning`/`.stringCount`/`.beats` —
 the same bundle passed to any custom renderer's `init`/`draw`. Since
-`highway.js` already stages any registered chart-transform provider's
-output into that bundle, this is also how a transform (retuning, difficulty
-remap, etc.) reaches the tab: there is no other path to observe it, since
-the transform is a synchronous, browser-only hook. This also removes GP5's
-hard 7-string cap — alphaTab's own model has no string-count ceiling.
+`highway.js` stages any registered chart-transform provider's output into
+that bundle first, this is also the only path by which a transform reaches
+the tab. This also drops GP5's hard 7-string cap — alphaTab's own model
+has no string-count ceiling.
 
 ### VI. Visualization is opt-in (`matchesArrangement` deliberately absent)
 Tab View does not advertise itself as the auto-select renderer for any
@@ -65,11 +62,10 @@ review.
 Amendments touching score construction (`src/score-builder.js`,
 `src/chart-quantize.js`) must keep `test/score-builder.test.mjs` and
 `test/chart-quantize.test.mjs` passing — the former against the real
-`@coderline/alphatab` package (see package.json), since it's the only
-verification available without a live browser. New alphaTab-independent
-chart math belongs in `chart-quantize.js`, not `score-builder.js` — that
-split is what keeps most of the conversion logic testable without alphaTab
-at all. Amendments touching the factory contract must align with whatever
-the latest core `slopsmithViz_*` interface requires.
+`@coderline/alphatab` package, the only verification available without a
+live browser. New alphaTab-independent chart math belongs in
+`chart-quantize.js`, keeping most conversion logic testable without
+alphaTab. Amendments touching the factory contract must align with the
+latest core `slopsmithViz_*` interface.
 
 **Version**: 4.0.0 | **Ratified**: 2026-05-09 | **Last Amended**: 2026-07-22

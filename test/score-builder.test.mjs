@@ -49,8 +49,7 @@ test('buildScoreFromBundle: bass detection sets bass tuning and channel', () => 
 
 test('buildScoreFromBundle: bass detection requires a whole word, not a substring', () => {
     // "BasslineKeys" contains "bass" as a substring but isn't a bass
-    // arrangement — regression test matching the word-boundary convention
-    // already established in feedBack-plugin-chart-retuner.
+    // arrangement.
     const score = finish(buildScoreFromBundle(alphaTab.model, {
         stringCount: 6,
         tuning: [0, 0, 0, 0, 0, 0],
@@ -133,6 +132,32 @@ test('buildScoreFromBundle: NaN/non-integer string or fret is dropped, not a cra
     assert.equal(beats[0].notes.length, 0);
     assert.equal(beats[1].notes.length, 0);
     assert.equal(beats[2].notes.length, 1);
+});
+
+test('buildScoreFromBundle: an odd gap (17 32nd-notes) ties the sustain, not silence', () => {
+    const score = finish(buildScoreFromBundle(alphaTab.model, {
+        stringCount: 6,
+        tuning: [0, 0, 0, 0, 0, 0],
+        beats: [{ time: 0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }],
+        notes: [
+            { t: 0.0, ...note({ s: 0, f: 5 }) },
+            { t: 1.0625, ...note({ s: 1, f: 2 }) },  // quantizes 17 slots after t=0.0
+        ],
+        chords: [],
+        songInfo: {},
+    }));
+    const beats = bars(score)[0].voices[0].beats;
+    // decomposeThirtySeconds(17) -> [half note, 32nd note]: origin + one tied continuation.
+    assert.equal(beats[0].duration, alphaTab.model.Duration.Half);
+    assert.equal(beats[0].notes[0].isTieDestination, false);
+
+    assert.equal(beats[1].duration, alphaTab.model.Duration.ThirtySecond);
+    assert.equal(beats[1].notes.length, 1);
+    const tied = beats[1].notes[0];
+    assert.equal(tied.isTieDestination, true);
+    assert.equal(tied.string, 1);
+    assert.equal(tied.fret, 5);
+    assert.equal(tied.tieOrigin, beats[0].notes[0]);
 });
 
 test('buildScoreFromBundle: hammer-on/slide auto-resolve to the next note on the same string', () => {
