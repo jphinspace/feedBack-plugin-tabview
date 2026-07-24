@@ -126,21 +126,34 @@ function _resolveMount(highwayCanvas) {
 // Cursor sync helpers (stateless — beats come from the bundle)
 // ═══════════════════════════════════════════════════════════════════════
 
+// Count of leading elements (arr sorted ascending by keyFn) with
+// keyFn(el) <= target — i.e. the first index where that stops holding.
+// "Largest index with keyFn <= target" is one less than this, which is
+// exactly what both call sites below want (verified equivalent to their
+// original bounded/unbounded binary searches against 17k+ randomized
+// cases). highway.js exposes an equivalent (bundle.lowerBoundTime) for
+// .time-keyed arrays, but that's a per-bundle helper and single-player
+// mode's cursor loop (_tvCursorLoop) has no bundle — only
+// window.highway.getBeats() — so this file needs its own bundle-independent
+// search; sharing ONE implementation between the two call sites here at
+// least avoids a second hand-rolled copy on top of that.
+function _countLE(arr, target, keyFn) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (keyFn(arr[mid]) <= target) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 function _tvTimeToTick(seconds, beats) {
     if (!beats || beats.length < 2) return 0;
     if (seconds < beats[0].time) return 0;
 
     // Largest idx in [0, beats.length-2] with beats[idx].time <= seconds.
-    // Binary search (beats are time-sorted) — identical result to a linear
-    // scan, but O(log n) per frame instead of O(n) (CodeRabbit nitpick: this
-    // is the dominant per-frame sync cost). beats[0].time <= seconds holds
-    // here (guarded above), so idx is always >= 0.
-    let idx = 0, lo = 0, hi = beats.length - 2;
-    while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (beats[mid].time <= seconds) { idx = mid; lo = mid + 1; }
-        else { hi = mid - 1; }
-    }
+    const count = _countLE(beats, seconds, b => b.time);
+    const idx = Math.min(count - 1, beats.length - 2);
 
     let frac = 0;
     if (idx < beats.length - 1) {
@@ -467,6 +480,17 @@ function createFactory() {
         _tvShowErrorBanner(message);
     }
 
+    // Detaches the current render's scoreLoaded/renderFinished/error
+    // listeners from the persistent _tvApi (see _tvInitAlphaTab). Called
+    // before registering a new render's listeners, on any render failure,
+    // and on teardown — every place a generation of listeners stops being
+    // the "current" one, so none are ever left dangling on the live api.
+    function _tvUnsubscribeAll() {
+        if (!_tvUnsubscribe) return;
+        for (const off of _tvUnsubscribe) { try { off(); } catch (_) {} }
+        _tvUnsubscribe = null;
+    }
+
     // ── alphaTab init / render ───────────────────────────────────────
 
     // Caller must have already confirmed a container exists (_tvContainer).
@@ -479,6 +503,19 @@ function createFactory() {
     // its own scoreLoaded/renderFinished/error closures (they capture this
     // call's notesRef/myToken), so the previous render's listeners are
     // unregistered first via the unregister functions .on() returns.
+    //
+    // We deliberately do NOT clear _tvAtMount's DOM ourselves before
+    // re-rendering (unlike the old destroy/recreate design, which cleared
+    // it because it also destroyed and rebuilt the api). Verified against
+    // the pinned alphaTab source (BrowserUiFacade.beginAppendRenderResults,
+    // dist/alphaTab.js): the api creates its own canvas element ONCE at
+    // construction and holds a direct reference to it, and each render
+    // pass's preRender handler resets its own result counter, then removes
+    // any leftover child elements past that count ("remove elements that
+    // might be from a previous render session," verbatim from that
+    // function). Clearing the mount out from under it here would desync
+    // that bookkeeping and break the *next* render instead of the current
+    // one, for no benefit — the api already replaces its own prior output.
     function _tvInitAlphaTab(score, notesRef, myToken) {
         if (!_tvApi) {
             _tvApi = new alphaTab.AlphaTabApi(_tvAtMount, {
@@ -503,13 +540,15 @@ function createFactory() {
             });
         }
 
-        if (_tvUnsubscribe) {
-            for (const off of _tvUnsubscribe) { try { off(); } catch (_) {} }
-            _tvUnsubscribe = null;
-        }
+        _tvUnsubscribeAll();
         _tvReady = false;
         _tvAtBeats = [];
         _tvLastBeat = null;
+        // Set once renderFinished fires for the first time under this
+        // generation — distinguishes "this chart just replaced the
+        // previous one" (reset scroll, see below) from a later
+        // resize-driven re-layout of the SAME chart (must NOT reset it).
+        let isFirstRenderForThisGeneration = true;
 
         // On load, flatten the score into a tick-sorted beat timeline so
         // _tvSyncCursor can resolve the current playback tick → Beat →
@@ -533,6 +572,18 @@ function createFactory() {
             if (_tvContainer) _tvContainer.style.visibility = '';
             if (_tvHighwayCanvas) _tvHighwayCanvas.style.visibility = 'hidden';
             _tvSetHighwayVisible(false);
+            if (isFirstRenderForThisGeneration) {
+                isFirstRenderForThisGeneration = false;
+                // The container/scroll position persists across rebuilds
+                // along with _tvApi — reset it here, now that the new
+                // chart's content has actually replaced the old (doing
+                // this any earlier would visibly snap the STILL-DISPLAYED
+                // previous chart to the top-left before the swap happens),
+                // so switching to a shorter arrangement doesn't leave the
+                // view scrolled past the new content until playback
+                // catches up.
+                if (_tvContainer) { _tvContainer.scrollTop = 0; _tvContainer.scrollLeft = 0; }
+            }
             _tvCurrentNotesRef = notesRef;
             _tvPendingNotesRef = null;
             _tvFailedNotesRef = null;
@@ -552,6 +603,10 @@ function createFactory() {
         const offError = _tvApi.error.on(function (e) {
             if (_tvInitToken !== myToken) return;
             console.error('[TabView] alphaTab error:', e);
+            // This generation has definitively failed — detach its own
+            // listeners now instead of leaving them attached to the live
+            // _tvApi until some later render attempt happens to clean up.
+            _tvUnsubscribeAll();
             _tvPendingNotesRef = null;
             _tvFailedNotesRef = notesRef;
             const msg = (e && e.message) ? e.message : (typeof e === 'string' ? e : 'render failed');
@@ -564,64 +619,91 @@ function createFactory() {
             score.finish(_tvApi.settings);
             _tvApi.renderScore(score, [0]);
         } catch (e) {
-            console.error('[TabView] renderScore failed:', e);
-            _tvPendingNotesRef = null;
-            _tvFailedNotesRef = notesRef;
-            _tvShowFailure((e && e.message) ? e.message : String(e));
+            // _tvUnsubscribe unambiguously refers to the 3 listeners just
+            // registered above (nothing else could have reassigned it in
+            // between) — safe to detach immediately here, unlike in the
+            // caller's catch, which can also be reached without this
+            // function ever having run (see _tvRenderFromBundle). Re-throw
+            // so that shared failure bookkeeping (_tvFailedNotesRef, the
+            // banner) still happens in the one place that owns it.
+            _tvUnsubscribeAll();
+            throw e;
         }
     }
 
-    // Builds the score from `bundle` and renders it. Synchronous except
-    // for the one-time alphaTab CDN script load.
+    // Builds the score from `bundle` and renders it. Awaits the one-time
+    // alphaTab CDN script load FIRST — buildScoreFromBundle and
+    // _tvInitAlphaTab both need window.alphaTab, and _tvLoadScript is the
+    // only place that ever requests the CDN script, so building the score
+    // before awaiting it would permanently fail (and never even fetch the
+    // script) on every cold activation.
     async function _tvRenderFromBundle(bundle, myToken) {
         if (!bundle) return;
         if (!_resolveMount(_tvHighwayCanvas)) return;
 
-        let score;
-        try {
-            score = buildScoreFromBundle(window.alphaTab && window.alphaTab.model, bundle);
-        } catch (e) {
-            if (_tvInitToken !== myToken) return;
-            console.error('[TabView] score build failed:', e);
-            _tvFailedNotesRef = bundle.notes;
-            _tvShowFailure((e && e.message) ? e.message : String(e));
-            return;
-        }
-        if (!score) return;
+        // One snapshot for this whole render attempt — draw()'s dirty-check
+        // and every ref written below must agree on the same normalized
+        // value (bundle.notes is read exactly once here, not re-read at
+        // each step), so a falsy-but-not-null bundle.notes can't desync
+        // the buildInFlight/previouslyFailed guards from draw()'s check.
+        const notesRef = bundle.notes || null;
 
-        _tvPendingNotesRef = bundle.notes;
+        // Mark this ref "in flight" for the WHOLE attempt, starting before
+        // the CDN-load await — not just from the point buildScoreFromBundle
+        // succeeds. Otherwise, on a cold activation (script not yet
+        // fetched), every draw() frame during that network wait sees
+        // buildInFlight===false and re-invokes this function, stacking up
+        // redundant attempts against the one shared load promise.
+        _tvPendingNotesRef = notesRef;
+
         try {
             await _tvLoadScript();
+            if (_tvInitToken !== myToken) return;
+
+            const score = buildScoreFromBundle(window.alphaTab && window.alphaTab.model, bundle);
+            if (!score) {
+                _tvPendingNotesRef = null;
+                _tvFailedNotesRef = notesRef;
+                return;
+            }
+
+            // _tvCreateContainer returns null when the mount target isn't in
+            // the DOM (player screen closed, unusual timing during screen
+            // transitions). Clear the pending marker so the next draw()
+            // retries cleanly instead of treating this ref as permanently
+            // in flight.
+            const container = _tvCreateContainer();
+            if (!container) {
+                _tvPendingNotesRef = null;
+                console.warn('[TabView] mount container missing; leaving highway visible');
+                if (_tvHighwayCanvas) _tvHighwayCanvas.style.visibility = _tvPrevVisibility || '';
+                _tvSetHighwayVisible(null);
+                return;
+            }
+            _tvSizeContainer();
+
+            // _tvPendingNotesRef stays set (guarding against a re-trigger)
+            // until renderFinished/error resolves it — alphaTab's render
+            // pipeline is async from here (renderFinished fires several rAFs
+            // later, or never on failure). DO NOT show the container or hide
+            // the highway here; that visibility swap happens in
+            // renderFinished/error so the player isn't stranded blank
+            // mid-render.
+            _tvInitAlphaTab(score, notesRef, myToken);
         } catch (e) {
             if (_tvInitToken !== myToken) return;
+            console.error('[TabView] render failed:', e);
+            // Do NOT _tvUnsubscribeAll() here: if this throw happened before
+            // _tvInitAlphaTab ever ran for this attempt (CDN load or score
+            // build failed), _tvUnsubscribe still correctly belongs to a
+            // DIFFERENT, still-live prior generation — detaching it here
+            // would silently drop that generation's still-valid listeners.
+            // _tvInitAlphaTab owns cleanup of its OWN listeners on a
+            // finish()/renderScore() failure (see its own try/catch).
             _tvPendingNotesRef = null;
-            _tvFailedNotesRef = bundle.notes;
+            _tvFailedNotesRef = notesRef;
             _tvShowFailure((e && e.message) ? e.message : String(e));
-            return;
         }
-        if (_tvInitToken !== myToken) return;
-
-        // _tvCreateContainer returns null when the mount target isn't in
-        // the DOM (player screen closed, unusual timing during screen
-        // transitions). Clear the pending marker so the next draw() retries
-        // cleanly instead of treating this notes ref as permanently in flight.
-        const container = _tvCreateContainer();
-        if (!container) {
-            _tvPendingNotesRef = null;
-            console.warn('[TabView] mount container missing; leaving highway visible');
-            if (_tvHighwayCanvas) _tvHighwayCanvas.style.visibility = _tvPrevVisibility || '';
-            _tvSetHighwayVisible(null);
-            return;
-        }
-        _tvSizeContainer();
-
-        // _tvPendingNotesRef stays set (guarding against a re-trigger)
-        // until renderFinished/error resolves it — alphaTab's render
-        // pipeline is async from here (renderFinished fires several rAFs
-        // later, or never on failure). DO NOT show the container or hide
-        // the highway here; that visibility swap happens in
-        // renderFinished/error so the player isn't stranded blank mid-render.
-        _tvInitAlphaTab(score, bundle.notes, myToken);
     }
 
     // ── Beat timeline (tick → Beat) ─────────────────────────────────
@@ -662,12 +744,7 @@ function createFactory() {
         const arr = _tvAtBeats;
         if (!arr || arr.length === 0) return null;
         if (tick < arr[0].start) return arr[0].beat;
-        let lo = 0, hi = arr.length - 1, ans = 0;
-        while (lo <= hi) {
-            const mid = (lo + hi) >> 1;
-            if (arr[mid].start <= tick) { ans = mid; lo = mid + 1; }
-            else { hi = mid - 1; }
-        }
+        const ans = _countLE(arr, tick, b => b.start) - 1;
         return arr[ans].beat;
     }
 
@@ -820,11 +897,14 @@ function createFactory() {
         _tvLatestBeats = null;
         _tvAtBeats = [];
         _tvLastBeat = null;
+        // Detach this generation's listeners before destroying the api —
+        // don't rely on AlphaTabApi.destroy() to also clear its own event
+        // emitters' subscriber lists.
+        _tvUnsubscribeAll();
         if (_tvApi) {
             try { _tvApi.destroy(); } catch (_) {}
             _tvApi = null;
         }
-        _tvUnsubscribe = null;
         _tvRemoveContainer();
         _tvRemoveErrorBanner();
         if (restoreCanvas && _tvHighwayCanvas) {
@@ -839,6 +919,15 @@ function createFactory() {
 
     return {
         init(canvas, bundle) {
+            // Bump the token BEFORE tearing down (matching destroy()'s
+            // order below), not after: _teardown() destroys _tvApi, and if
+            // that synchronously re-fires a still-attached listener (e.g.
+            // AlphaTabApi.destroy() emitting its own error/renderFinished),
+            // that listener's staleness guard must already see a mismatched
+            // token, or it would run its full body against state this very
+            // call is mid-resetting.
+            const myToken = ++_tvInitToken;
+
             // Always run teardown at init start, even when there's
             // no visible container/API to tear down. A previous
             // activation that failed BEFORE alphaTab initialised
@@ -861,7 +950,6 @@ function createFactory() {
             _teardown(/* restoreCanvas */ true);
             window.removeEventListener('resize', _onWinResize);
 
-            const myToken = ++_tvInitToken;
             _tvHighwayCanvas = canvas;
             _tvPrevVisibility = canvas ? canvas.style.visibility : '';
 
@@ -929,7 +1017,14 @@ function createFactory() {
             // audio time and render time. The loop bows out under
             // _ssActive(), so the two paths stay mutually exclusive.
             if (_ssActive()) {
-                _tvSyncCursor(bundle.currentTime);
+                // Same NaN/finite guard as the single-player _tvCursorLoop:
+                // bundle.currentTime can be NaN in transient states, and
+                // feeding NaN into _tvSyncCursor would set _tvLastTick to
+                // NaN permanently — Math.abs(NaN - anything) is never <= 30,
+                // so the "skip redundant frame" check could never trip
+                // again for this instance's lifetime.
+                const t = bundle.currentTime;
+                if (t != null && isFinite(t)) _tvSyncCursor(t);
             }
         },
         resize(/* w, h */) {

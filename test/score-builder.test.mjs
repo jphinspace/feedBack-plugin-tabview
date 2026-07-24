@@ -47,6 +47,21 @@ test('buildScoreFromBundle: bass detection sets bass tuning and channel', () => 
     assert.equal(score.tracks[0].playbackInfo.primaryChannel, 1);
 });
 
+test('buildScoreFromBundle: bass detection requires a whole word, not a substring', () => {
+    // "BasslineKeys" contains "bass" as a substring but isn't a bass
+    // arrangement — regression test matching the word-boundary convention
+    // already established in feedBack-plugin-chart-retuner.
+    const score = finish(buildScoreFromBundle(alphaTab.model, {
+        stringCount: 6,
+        tuning: [0, 0, 0, 0, 0, 0],
+        beats: [{ time: 0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }],
+        notes: [], chords: [],
+        songInfo: { arrangement: 'BasslineKeys', duration: 2.0 },
+    }));
+    assert.deepEqual(score.tracks[0].staves[0].tuning, [64, 59, 55, 50, 45, 40]); // guitar, not bass
+    assert.equal(score.tracks[0].playbackInfo.primaryChannel, 0);
+});
+
 test('buildScoreFromBundle: note lands on the right string/fret', () => {
     const score = finish(buildScoreFromBundle(alphaTab.model, {
         stringCount: 6,
@@ -61,18 +76,42 @@ test('buildScoreFromBundle: note lands on the right string/fret', () => {
     assert.equal(n.fret, 3);
 });
 
-test('buildScoreFromBundle: chord notes land in one beat', () => {
+test('buildScoreFromBundle: chord notes land in one beat, each with its own fret', () => {
     const score = finish(buildScoreFromBundle(alphaTab.model, {
         stringCount: 6,
         tuning: [0, 0, 0, 0, 0, 0],
         beats: [{ time: 0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }],
         notes: [],
-        chords: [{ t: 0.0, hd: false, notes: [note({ s: 0, f: 2 }), note({ s: 5, f: 0 })] }],
+        chords: [{ t: 0.0, hd: false, notes: [note({ s: 0, f: 2 }), note({ s: 5, f: 7 })] }],
         songInfo: {},
     }));
     const beat = bars(score)[0].voices[0].beats[0];
     assert.equal(beat.notes.length, 2);
-    assert.deepEqual(beat.notes.map(n => n.string).sort(), [1, 6]);
+    // Cross-check fret-to-string pairing, not just which strings sounded —
+    // distinct frets (2 vs 7) so a cross-assignment bug can't pass by
+    // coincidence the way two equal/default frets could.
+    const byString = new Map(beat.notes.map(n => [n.string, n.fret]));
+    assert.equal(byString.get(1), 2); // RS string 0 -> alphaTab string 1
+    assert.equal(byString.get(6), 7); // RS string 5 -> alphaTab string 6
+});
+
+test('buildScoreFromBundle: an out-of-range string index is dropped, not corrupted', () => {
+    const score = finish(buildScoreFromBundle(alphaTab.model, {
+        stringCount: 6,
+        tuning: [0, 0, 0, 0, 0, 0],
+        beats: [{ time: 0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }],
+        notes: [
+            { t: 0.0, ...note({ s: 8, f: 3 }) },  // out of range for stringCount=6
+            { t: 0.5, ...note({ s: 2, f: 1 }) },  // valid
+        ],
+        chords: [],
+        songInfo: {},
+    }));
+    const beats = bars(score)[0].voices[0].beats;
+    assert.equal(beats[0].notes.length, 0); // dropped, not a corrupted/NaN-pitch note
+    assert.equal(beats[1].notes.length, 1);
+    assert.equal(beats[1].notes[0].string, 3); // s:2 -> alphaTab string 3
+    assert.equal(Number.isFinite(beats[1].notes[0].realValue), true);
 });
 
 test('buildScoreFromBundle: hammer-on/slide auto-resolve to the next note on the same string', () => {
@@ -94,7 +133,7 @@ test('buildScoreFromBundle: hammer-on/slide auto-resolve to the next note on the
     assert.equal(origin.slideTarget.fret, 5);
 });
 
-test('buildScoreFromBundle: bend/harmonic/accent/palm-mute/mute map onto the note', () => {
+test('buildScoreFromBundle: bend/harmonic/accent/palm-mute map onto the note', () => {
     const score = finish(buildScoreFromBundle(alphaTab.model, {
         stringCount: 6,
         tuning: [0, 0, 0, 0, 0, 0],
@@ -109,6 +148,43 @@ test('buildScoreFromBundle: bend/harmonic/accent/palm-mute/mute map onto the not
     assert.equal(n.harmonicType, alphaTab.model.HarmonicType.Natural);
     assert.equal(n.accentuated, alphaTab.model.AccentuationType.Normal);
     assert.equal(n.isPalmMute, true);
+});
+
+test('buildScoreFromBundle: mute and tap map onto the note', () => {
+    const score = finish(buildScoreFromBundle(alphaTab.model, {
+        stringCount: 6,
+        tuning: [0, 0, 0, 0, 0, 0],
+        beats: [{ time: 0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }],
+        notes: [
+            { t: 0.0, ...note({ s: 0, f: 2, mt: true }) },
+            { t: 0.5, ...note({ s: 1, f: 3, tp: true }) },
+        ],
+        chords: [],
+        songInfo: {},
+    }));
+    const beats = bars(score)[0].voices[0].beats;
+    assert.equal(beats[0].notes[0].isDead, true);
+    assert.equal(beats[1].notes[0].isLeftHandTapped, true);
+});
+
+test('buildScoreFromBundle: tremolo only marks the beat when every note requests it', () => {
+    const score = finish(buildScoreFromBundle(alphaTab.model, {
+        stringCount: 6,
+        tuning: [0, 0, 0, 0, 0, 0],
+        beats: [{ time: 0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }],
+        notes: [],
+        chords: [
+            // Mixed: only one of two notes wants tremolo -> not applied.
+            { t: 0.0, hd: false, notes: [note({ s: 0, f: 1, tr: true }), note({ s: 1, f: 2, tr: false })] },
+            // Uniform: both notes want tremolo -> applied.
+            { t: 0.5, hd: false, notes: [note({ s: 0, f: 3, tr: true }), note({ s: 1, f: 4, tr: true })] },
+        ],
+        songInfo: {},
+    }));
+    const beats = bars(score)[0].voices[0].beats;
+    assert.equal(beats[0].tremoloPicking, undefined);
+    assert.notEqual(beats[1].tremoloPicking, undefined);
+    assert.equal(beats[1].tremoloPicking.marks, 1);
 });
 
 test('buildScoreFromBundle: events partition correctly across measures (and outliers drop)', () => {

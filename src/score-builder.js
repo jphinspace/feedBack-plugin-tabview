@@ -56,7 +56,12 @@ function restBeats(atModel, thirtySeconds) {
 // One measure's events -> alphaTab Beat[] (rests filling gaps, one Note
 // per sounded string per slot — the RS "same string re-struck" collision
 // guard mirrors the old GP5 path's one-note-per-string-per-beat limit).
-function createBeats(atModel, events, measureInfo) {
+// stringCount bounds-checks wire.s: a chart-transform provider is a less
+// trusted data source than the original chart file, and an out-of-range
+// string index would otherwise index past staff.tuning and land on NaN
+// pitch instead of being safely dropped (the old GP5 path also dropped
+// any note whose mapped string fell outside the representable range).
+function createBeats(atModel, events, measureInfo, stringCount) {
     const total = measureInfo.numBeats * SUBDIV;
     if (!events.length) return restBeats(atModel, total);
 
@@ -85,11 +90,21 @@ function createBeats(atModel, events, measureInfo) {
         beat.duration = decomposed[0].duration;
         beat.dots = decomposed[0].dots;
 
-        let beatTremolo = false;
+        // alphaTab's Beat model has no per-note tremolo field (only
+        // Beat.tremoloPicking), unlike GP5's per-note NoteEffect — so a
+        // mixed chord (one tremolo string among plain ones) can't be
+        // represented exactly either way. Require EVERY sounded note in
+        // the slot to request it before marking the whole beat: silently
+        // dropping tremolo on a lone flagged string in a mixed chord is a
+        // smaller error than incorrectly tremolo-marking strings that
+        // never asked for it.
+        let soundedCount = 0;
+        let tremoloCount = 0;
         const seen = new Set();
         for (const ev of slots.get(pos)) {
             const wireNotes = ev.type === 'chord' ? ev.chordNotes : [ev.note];
             for (const wire of wireNotes) {
+                if (wire.s < 0 || wire.s >= stringCount) continue;
                 if (seen.has(wire.s)) continue;
                 seen.add(wire.s);
                 const note = new atModel.Note();
@@ -97,11 +112,12 @@ function createBeats(atModel, events, measureInfo) {
                 note.string = wire.s + 1;
                 note.fret = wire.f;
                 applyNoteEffects(note, wire, atModel);
-                if (wire.tr) beatTremolo = true;
+                soundedCount++;
+                if (wire.tr) tremoloCount++;
                 beat.addNote(note);
             }
         }
-        if (beatTremolo) {
+        if (soundedCount > 0 && tremoloCount === soundedCount) {
             const t = new atModel.TremoloPickingEffect();
             t.marks = 1;
             t.style = atModel.TremoloPickingStyle.Default;
@@ -134,7 +150,14 @@ export function buildScoreFromBundle(atModel, bundle) {
         ? Math.trunc(bundle.stringCount) : 6;
     const tuningOffsets = Array.isArray(bundle.tuning) && bundle.tuning.length
         ? bundle.tuning : new Array(stringCount).fill(0);
-    const isBass = /bass/i.test(songInfo.arrangement || '');
+    // Word-boundary match (not a bare substring) so e.g. "BasslineKeys"
+    // doesn't misclassify as bass — matches the same convention already
+    // established elsewhere in the ecosystem (feedBack-plugin-chart-
+    // retuner's arrangementClassFor). There's no more-authoritative signal
+    // available here: bundle.songInfo carries only the arrangement's
+    // display name, not an instrument-type flag (that only ever existed
+    // server-side, in the arrangement file itself).
+    const isBass = /\bbass\b/i.test(songInfo.arrangement || '');
 
     let measures = parseMeasures(bundle.beats);
     if (!measures.length) measures = [fallbackMeasure(songInfo.duration)];
@@ -184,7 +207,7 @@ export function buildScoreFromBundle(atModel, bundle) {
             measureEvents.push(events[eventIdx]);
             eventIdx++;
         }
-        for (const beat of createBeats(atModel, measureEvents, info)) voice.addBeat(beat);
+        for (const beat of createBeats(atModel, measureEvents, info, stringCount)) voice.addBeat(beat);
     }
 
     return score;

@@ -59,6 +59,13 @@ test('fallbackMeasure: defaults and custom length', () => {
     assert.equal(fallbackMeasure(30.0).endTime, 30.0);
 });
 
+test('fallbackMeasure: non-positive/invalid length falls back to the default span', () => {
+    assert.equal(fallbackMeasure(0).endTime, 60.0);
+    assert.equal(fallbackMeasure(-5).endTime, 60.0);
+    assert.equal(fallbackMeasure(NaN).endTime, 60.0);
+    assert.equal(fallbackMeasure(undefined).endTime, 60.0);
+});
+
 test('mergeEvents: sorts notes and chords by time', () => {
     const events = mergeEvents(
         [{ t: 1.0, s: 0, f: 0 }, { t: 0.0, s: 1, f: 2 }],

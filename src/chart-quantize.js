@@ -62,7 +62,13 @@ export function parseMeasures(beats) {
 }
 
 export function fallbackMeasure(length) {
-    const len = length || 60.0;
+    // Any non-positive/invalid length (missing, NaN, 0, or negative — none
+    // of which are useful for rendering a real measure) falls back to a
+    // default span. `length || 60.0` looked equivalent but wasn't: it also
+    // let a negative length straight through (only 0/NaN/null/undefined
+    // are falsy in JS), which would have produced a measure ending before
+    // it starts.
+    const len = (typeof length === 'number' && length > 0) ? length : 60.0;
     return {
         startTime: 0.0,
         endTime: len,
