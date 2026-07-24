@@ -28,6 +28,17 @@ test('parseMeasures: groups by measure marker', () => {
     assert.equal(measures[1].startTime, 2.0);
 });
 
+test('parseMeasures: a null measure field does not start a new group', () => {
+    // null >= 0 is true in JS, so an unguarded check would wrongly treat a
+    // beat with measure:null as a measure boundary.
+    const beats = [
+        { time: 0.0, measure: 0 }, { time: 0.5, measure: null }, { time: 1.0 }, { time: 1.5 },
+    ];
+    const measures = parseMeasures(beats);
+    assert.equal(measures.length, 1);
+    assert.equal(measures[0].numBeats, 4);
+});
+
 test('parseMeasures: estimates bpm from beat interval', () => {
     const beats = [{ time: 0.0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }];
     const measures = parseMeasures(beats);
@@ -57,6 +68,12 @@ test('fallbackMeasure: defaults and custom length', () => {
     assert.equal(m.numBeats, 4);
     assert.equal(m.bpm, 120.0);
     assert.equal(fallbackMeasure(30.0).endTime, 30.0);
+});
+
+test('fallbackMeasure: beatTimes has exactly numBeats entries spanning the full length', () => {
+    const m = fallbackMeasure(40.0);
+    assert.equal(m.beatTimes.length, m.numBeats);
+    assert.deepEqual(m.beatTimes, [0, 10, 20, 30]);
 });
 
 test('fallbackMeasure: non-positive/invalid length falls back to the default span', () => {

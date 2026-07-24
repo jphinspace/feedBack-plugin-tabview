@@ -28,11 +28,11 @@ function applyNoteEffects(note, wire, atModel) {
     if (bendVal && bendVal > 0) {
         const quarterTones = bendVal * 2;
         note.bendType = atModel.BendType.Bend;
-        note.bendPoints = [
-            new atModel.BendPoint(0, 0),
-            new atModel.BendPoint(30, quarterTones),
-            new atModel.BendPoint(60, quarterTones),
-        ];
+        // addBendPoint (not a direct bendPoints assignment) so it also
+        // updates maxBendPoint, which alphaTab's own bend rendering reads.
+        note.addBendPoint(new atModel.BendPoint(0, 0));
+        note.addBendPoint(new atModel.BendPoint(30, quarterTones));
+        note.addBendPoint(new atModel.BendPoint(60, quarterTones));
     }
     if (wire.hm) note.harmonicType = atModel.HarmonicType.Natural;
     else if (wire.hp) note.harmonicType = atModel.HarmonicType.Pinch;
@@ -56,11 +56,12 @@ function restBeats(atModel, thirtySeconds) {
 // One measure's events -> alphaTab Beat[] (rests filling gaps, one Note
 // per sounded string per slot — the RS "same string re-struck" collision
 // guard mirrors the old GP5 path's one-note-per-string-per-beat limit).
-// stringCount bounds-checks wire.s: a chart-transform provider is a less
-// trusted data source than the original chart file, and an out-of-range
-// string index would otherwise index past staff.tuning and land on NaN
-// pitch instead of being safely dropped (the old GP5 path also dropped
-// any note whose mapped string fell outside the representable range).
+// wire.s/wire.f are validated (integer, in-range): a chart-transform
+// provider is a less trusted data source than the original chart file,
+// and a non-numeric/out-of-range string index would otherwise index past
+// staff.tuning and land on NaN pitch instead of being safely dropped (the
+// old GP5 path also dropped any note whose mapped string fell outside the
+// representable range).
 function createBeats(atModel, events, measureInfo, stringCount) {
     const total = measureInfo.numBeats * SUBDIV;
     if (!events.length) return restBeats(atModel, total);
@@ -104,7 +105,8 @@ function createBeats(atModel, events, measureInfo, stringCount) {
         for (const ev of slots.get(pos)) {
             const wireNotes = ev.type === 'chord' ? ev.chordNotes : [ev.note];
             for (const wire of wireNotes) {
-                if (wire.s < 0 || wire.s >= stringCount) continue;
+                if (!Number.isInteger(wire.s) || wire.s < 0 || wire.s >= stringCount) continue;
+                if (!Number.isInteger(wire.f) || wire.f < 0) continue;
                 if (seen.has(wire.s)) continue;
                 seen.add(wire.s);
                 const note = new atModel.Note();

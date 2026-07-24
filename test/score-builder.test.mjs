@@ -114,6 +114,27 @@ test('buildScoreFromBundle: an out-of-range string index is dropped, not corrupt
     assert.equal(Number.isFinite(beats[1].notes[0].realValue), true);
 });
 
+test('buildScoreFromBundle: NaN/non-integer string or fret is dropped, not a crash', () => {
+    // wire.s < 0 || wire.s >= stringCount alone lets NaN through (NaN fails
+    // both comparisons), and wire.f had no validation at all.
+    const score = finish(buildScoreFromBundle(alphaTab.model, {
+        stringCount: 6,
+        tuning: [0, 0, 0, 0, 0, 0],
+        beats: [{ time: 0, measure: 0 }, { time: 0.5 }, { time: 1.0 }, { time: 1.5 }],
+        notes: [
+            { t: 0.0, ...note({ s: NaN, f: 3 }) },
+            { t: 0.5, ...note({ s: 2, f: NaN }) },
+            { t: 1.0, ...note({ s: 2, f: 1 }) },  // valid
+        ],
+        chords: [],
+        songInfo: {},
+    }));
+    const beats = bars(score)[0].voices[0].beats;
+    assert.equal(beats[0].notes.length, 0);
+    assert.equal(beats[1].notes.length, 0);
+    assert.equal(beats[2].notes.length, 1);
+});
+
 test('buildScoreFromBundle: hammer-on/slide auto-resolve to the next note on the same string', () => {
     const score = finish(buildScoreFromBundle(alphaTab.model, {
         stringCount: 6,

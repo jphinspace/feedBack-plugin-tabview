@@ -53,4 +53,4 @@ The tab rebuilds whenever `bundle.notes`' identity changes — on a song/arrange
 | `screen.js` | Frontend: alphaTab integration, cursor sync, UI |
 | `src/chart-quantize.js` | Pure chart math: measures, quantization, tuning table (no alphaTab dependency) |
 | `src/score-builder.js` | bundle → alphaTab `Score` builder (techniques, track/staff/bar assembly) |
-| `test/` | Node tests for `src/score-builder.js` (`npm test`) |
+| `test/` | Node tests for `src/chart-quantize.js` and `src/score-builder.js` (`npm test`) |

@@ -23,7 +23,7 @@ export function parseMeasures(beats) {
     const groups = [];
     let cur = [];
     for (const b of beats) {
-        if (b.measure >= 0 && cur.length) { groups.push(cur); cur = []; }
+        if (typeof b.measure === 'number' && b.measure >= 0 && cur.length) { groups.push(cur); cur = []; }
         cur.push(b);
     }
     if (cur.length) groups.push(cur);
@@ -69,11 +69,17 @@ export function fallbackMeasure(length) {
     // are falsy in JS), which would have produced a measure ending before
     // it starts.
     const len = (typeof length === 'number' && length > 0) ? length : 60.0;
+    const numBeats = 4;
     return {
         startTime: 0.0,
         endTime: len,
-        numBeats: 4,
-        beatTimes: Array.from({ length: 8 }, (_, i) => i * 0.5),
+        numBeats,
+        // One beatTimes entry per numBeats, evenly spanning the measure —
+        // quantizeThirtySecond treats the LAST entry's "next boundary" as
+        // endTime, so a beatTimes/numBeats length mismatch here previously
+        // left slots past the true measure end unreachable (positions
+        // clamped into the final slot in createBeats).
+        beatTimes: Array.from({ length: numBeats }, (_, i) => (len * i) / numBeats),
         bpm: 120.0,
     };
 }

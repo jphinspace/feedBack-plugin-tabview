@@ -66,6 +66,11 @@ const ALPHATAB_CDN_BASE = 'https://cdn.jsdelivr.net/npm/@coderline/alphatab@' + 
 // confirmed fixed at 960 (MidiUtils.QuarterTime). Bar 1 starts at tick 0.
 const TICKS_PER_BEAT = 960;
 
+// Sentinel for "no ref tracked" in the chart-identity tracking below —
+// distinct from any real bundle.notes value, including a legitimately
+// null/empty one, so a null-notes chart can still be tracked correctly.
+const _NO_NOTES_REF = Symbol('no-notes-ref');
+
 let _alphaTabLoadPromise = null;
 function _tvLoadScript() {
     if (window.alphaTab) return Promise.resolve();
@@ -149,7 +154,7 @@ function _countLE(arr, target, keyFn) {
 
 function _tvTimeToTick(seconds, beats) {
     if (!beats || beats.length < 2) return 0;
-    if (seconds < beats[0].time) return 0;
+    if (!isFinite(seconds) || seconds < beats[0].time) return 0;
 
     // Largest idx in [0, beats.length-2] with beats[idx].time <= seconds.
     const count = _countLE(beats, seconds, b => b.time);
@@ -208,9 +213,9 @@ function createFactory() {
     // the effective chart changes (song load, mastery slider move, or a
     // chart-transform provider rerunning — toggle, capo/octave tweak, etc.),
     // so a reference change is exactly "rebuild the tab", independent of why.
-    let _tvCurrentNotesRef = null;  // notes ref the currently-rendered score reflects
-    let _tvPendingNotesRef = null;  // notes ref a render is currently in flight for
-    let _tvFailedNotesRef = null;   // notes ref that last failed (avoid a per-frame retry storm)
+    let _tvCurrentNotesRef = _NO_NOTES_REF;  // notes ref the currently-rendered score reflects
+    let _tvPendingNotesRef = _NO_NOTES_REF;  // notes ref a render is currently in flight for
+    let _tvFailedNotesRef = _NO_NOTES_REF;   // notes ref that last failed (avoid a per-frame retry storm)
 
     // Cursor sync
     let _tvLastTick = -9999;  // far below any real tick (0 is now a valid position)
@@ -585,8 +590,8 @@ function createFactory() {
                 if (_tvContainer) { _tvContainer.scrollTop = 0; _tvContainer.scrollLeft = 0; }
             }
             _tvCurrentNotesRef = notesRef;
-            _tvPendingNotesRef = null;
-            _tvFailedNotesRef = null;
+            _tvPendingNotesRef = _NO_NOTES_REF;
+            _tvFailedNotesRef = _NO_NOTES_REF;
             // A successful render supersedes any prior error banner.
             _tvRemoveErrorBanner();
             // renderFinished fires after EVERY (re)layout, including a
@@ -607,7 +612,7 @@ function createFactory() {
             // listeners now instead of leaving them attached to the live
             // _tvApi until some later render attempt happens to clean up.
             _tvUnsubscribeAll();
-            _tvPendingNotesRef = null;
+            _tvPendingNotesRef = _NO_NOTES_REF;
             _tvFailedNotesRef = notesRef;
             const msg = (e && e.message) ? e.message : (typeof e === 'string' ? e : 'render failed');
             _tvShowFailure(msg);
@@ -662,7 +667,7 @@ function createFactory() {
 
             const score = buildScoreFromBundle(window.alphaTab && window.alphaTab.model, bundle);
             if (!score) {
-                _tvPendingNotesRef = null;
+                _tvPendingNotesRef = _NO_NOTES_REF;
                 _tvFailedNotesRef = notesRef;
                 return;
             }
@@ -674,7 +679,7 @@ function createFactory() {
             // in flight.
             const container = _tvCreateContainer();
             if (!container) {
-                _tvPendingNotesRef = null;
+                _tvPendingNotesRef = _NO_NOTES_REF;
                 console.warn('[TabView] mount container missing; leaving highway visible');
                 if (_tvHighwayCanvas) _tvHighwayCanvas.style.visibility = _tvPrevVisibility || '';
                 _tvSetHighwayVisible(null);
@@ -700,7 +705,7 @@ function createFactory() {
             // would silently drop that generation's still-valid listeners.
             // _tvInitAlphaTab owns cleanup of its OWN listeners on a
             // finish()/renderScore() failure (see its own try/catch).
-            _tvPendingNotesRef = null;
+            _tvPendingNotesRef = _NO_NOTES_REF;
             _tvFailedNotesRef = notesRef;
             _tvShowFailure((e && e.message) ? e.message : String(e));
         }
@@ -891,9 +896,9 @@ function createFactory() {
         _tvStopCursorLoop();
         _tvReady = false;
         _tvLastTick = -9999;
-        _tvCurrentNotesRef = null;
-        _tvPendingNotesRef = null;
-        _tvFailedNotesRef = null;
+        _tvCurrentNotesRef = _NO_NOTES_REF;
+        _tvPendingNotesRef = _NO_NOTES_REF;
+        _tvFailedNotesRef = _NO_NOTES_REF;
         _tvLatestBeats = null;
         _tvAtBeats = [];
         _tvLastBeat = null;
@@ -989,8 +994,8 @@ function createFactory() {
             // exact ref, and skip a ref that just failed.
             const notesRef = bundle.notes || null;
             const chartChanged = notesRef !== _tvCurrentNotesRef;
-            const buildInFlight = _tvPendingNotesRef !== null && _tvPendingNotesRef === notesRef;
-            const previouslyFailed = _tvFailedNotesRef !== null && _tvFailedNotesRef === notesRef;
+            const buildInFlight = _tvPendingNotesRef === notesRef;
+            const previouslyFailed = _tvFailedNotesRef === notesRef;
             if (chartChanged && !buildInFlight && !previouslyFailed) {
                 // Defense-in-depth mount check. _tvRenderFromBundle also
                 // guards (and is the single source of truth), but doing
