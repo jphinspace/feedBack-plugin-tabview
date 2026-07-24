@@ -249,8 +249,8 @@ function createFactory() {
         }
 
         const c = document.createElement('div');
-        c.id = 'tabview-container-' + _instanceId;
-        c.className = 'tabview-container';
+        c.id = 'tabview-dev-container-' + _instanceId;
+        c.className = 'tabview-dev-container';
         c.dataset.tabviewInstance = String(_instanceId);
         // visibility:hidden (not display:none) so alphaTab can still
         // measure width during init — display:none gives clientWidth=0
@@ -268,8 +268,8 @@ function createFactory() {
         ].join(';');
 
         const inner = document.createElement('div');
-        inner.id = 'tabview-at-' + _instanceId;
-        inner.className = 'tabview-at';
+        inner.id = 'tabview-dev-at-' + _instanceId;
+        inner.className = 'tabview-dev-at';
         c.appendChild(inner);
 
         // Playback marker (slopsmith#734): a Songsterr-style vertical band,
@@ -277,8 +277,8 @@ function createFactory() {
         // left-border playhead. Positioned from boundsLookup geometry in
         // _tvUpdateMarker, not alphaTab's own cursor.
         const hl = document.createElement('div');
-        hl.id = 'tabview-marker-' + _instanceId;
-        hl.className = 'tabview-marker';
+        hl.id = 'tabview-dev-marker-' + _instanceId;
+        hl.className = 'tabview-dev-marker';
         hl.style.cssText = [
             'position:absolute',
             'left:0',
@@ -365,8 +365,8 @@ function createFactory() {
         const mount = _resolveMount(_tvHighwayCanvas);
         if (!mount) return;
         const banner = document.createElement('div');
-        banner.id = 'tabview-error-banner-' + _instanceId;
-        banner.className = 'tabview-error-banner';
+        banner.id = 'tabview-dev-error-banner-' + _instanceId;
+        banner.className = 'tabview-dev-error-banner';
         banner.dataset.tabviewInstance = String(_instanceId);
         banner.setAttribute('role', 'alert');
         banner.style.cssText = [
@@ -410,7 +410,7 @@ function createFactory() {
         if (_tvContainer) _tvContainer.style.visibility = 'hidden';
         if (_tvHighwayCanvas) _tvHighwayCanvas.style.visibility = _tvPrevVisibility || '';
         _tvSetHighwayVisible(null);
-        console.warn('[TabView] ' + message);
+        console.warn('[TabView dev] ' + message);
         _tvShowErrorBanner(message);
     }
 
@@ -509,7 +509,7 @@ function createFactory() {
 
         const offError = _tvApi.error.on(function (e) {
             if (_tvInitToken !== myToken) return;
-            console.error('[TabView] alphaTab error:', e);
+            console.error('[TabView dev] alphaTab error:', e);
             // This generation has failed — detach its listeners now rather
             // than leaving them until a later render happens to clean up.
             _tvUnsubscribeAll();
@@ -567,7 +567,7 @@ function createFactory() {
             const container = _tvCreateContainer();
             if (!container) {
                 _tvPendingNotesRef = _NO_NOTES_REF;
-                console.warn('[TabView] mount container missing; leaving highway visible');
+                console.warn('[TabView dev] mount container missing; leaving highway visible');
                 if (_tvHighwayCanvas) _tvHighwayCanvas.style.visibility = _tvPrevVisibility || '';
                 _tvSetHighwayVisible(null);
                 return;
@@ -589,7 +589,7 @@ function createFactory() {
             }, 6000);
         } catch (e) {
             if (_tvInitToken !== myToken) return;
-            console.error('[TabView] render failed:', e);
+            console.error('[TabView dev] render failed:', e);
             // Don't _tvUnsubscribeAll() here: if this threw before
             // _tvInitAlphaTab ran, _tvUnsubscribe still belongs to a
             // different, live generation — detaching would drop its
@@ -887,8 +887,8 @@ function createFactory() {
 // Arrangement-agnostic — Auto mode should not auto-select tabview.
 // (The static matchesArrangement is intentionally absent.)
 
-window.slopsmithViz_tabview = createFactory;
+window.slopsmithViz_tabview_dev = createFactory;
 // slopsmith→feedBack rename: host viz picker looks up `window.feedBackViz_<id>`.
-window.feedBackViz_tabview = window.slopsmithViz_tabview;
+window.feedBackViz_tabview_dev = window.slopsmithViz_tabview_dev;
 
 })();
