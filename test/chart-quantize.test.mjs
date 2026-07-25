@@ -166,3 +166,11 @@ test('buildTuning: tuning array shorter than stringCount defaults missing offset
     const tunings = buildTuning([3], false, 6);
     assert.deepEqual(tunings, [64, 59, 55, 50, 45, 40 + 3]);
 });
+
+test('buildTuning: non-finite offsets (untrusted chart-transform output) fall back to 0', () => {
+    // Indexed by rsIdx (lowest string first): only tuningOffsets[5], the
+    // highest string, is a finite value — everything else must default to 0
+    // instead of propagating NaN/Infinity into the tunings array.
+    const tunings = buildTuning([NaN, Infinity, -Infinity, undefined, 'x', 2], false, 6);
+    assert.deepEqual(tunings, [64 + 2, 59, 55, 50, 45, 40]);
+});
