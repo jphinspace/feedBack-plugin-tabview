@@ -169,7 +169,8 @@ export function buildTuning(tuningOffsets, isBass, stringCount) {
         const baseMidi = gpIdx < standard.length
             ? standard[gpIdx]
             : standard[standard.length - 1] - 5 * (gpIdx - standard.length + 1);
-        const offset = rsIdx < tuningOffsets.length ? tuningOffsets[rsIdx] : 0;
+        const raw = rsIdx < tuningOffsets.length ? tuningOffsets[rsIdx] : 0;
+        const offset = Number.isFinite(raw) ? raw : 0;
         tunings.push(baseMidi + offset);
     }
     return tunings;
