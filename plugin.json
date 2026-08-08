@@ -1,6 +1,6 @@
 {
-  "id": "tabview",
-  "name": "Tab View",
+  "id": "tabview_dev",
+  "name": "Tab View (dev)",
   "version": "4.0.0",
   "type": "visualization",
   "private": false,
